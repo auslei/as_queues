@@ -2,7 +2,7 @@
 Shared serialized job queue for ic-* FastAPI microservices.
 
 Usage pattern:
-    from ic_queues import JobQueue, JobRecord, JobEnqueueResponse
+    from ic_queues import JobQueue, JobRecord
 
     job_queue = JobQueue("my_service")
 
@@ -22,6 +22,7 @@ Usage pattern:
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Protocol, runtime_checkable
@@ -75,13 +76,6 @@ class JobRecord(BaseModel):
     error: Optional[str] = None
 
 
-class JobEnqueueResponse(BaseModel):
-    """Returned immediately when a job is accepted into the queue."""
-    job_id: str
-    status: str
-    queue_size: int
-    position: int
-
 
 class JobQueue:
     """
@@ -120,7 +114,7 @@ class JobQueue:
     def _dedup_key(job_type: str, request_data: Dict[str, Any]) -> str:
         """Canonical key for deduplication — job_type + sorted request fields."""
         try:
-            canonical = str(sorted(str(k) + "=" + str(v) for k, v in request_data.items()))
+            canonical = json.dumps(request_data, sort_keys=True, default=str)
         except Exception:
             canonical = str(request_data)
         return f"{job_type}::{canonical}"
@@ -234,7 +228,7 @@ class JobQueue:
             self._log.info(f"[{self.service_name}] Queue worker started")
 
     async def stop(self) -> None:
-        """Stop the background worker. Call from lifespan shutdown."""
+        """Stop the background worker and wait for in-flight jobs. Call from lifespan shutdown."""
         if self._worker_task and not self._worker_task.done():
             self._worker_task.cancel()
             try:
@@ -242,6 +236,12 @@ class JobQueue:
             except asyncio.CancelledError:
                 pass
         self._worker_task = None
+
+        if self._running_tasks:
+            for task in list(self._running_tasks.values()):
+                task.cancel()
+            await asyncio.gather(*list(self._running_tasks.values()), return_exceptions=True)
+
         self._log.info(f"[{self.service_name}] Queue worker stopped")
 
     def make_router(self) -> APIRouter:
@@ -268,8 +268,12 @@ class JobQueue:
         @router.delete("/jobs/{job_id}")
         async def delete_job(job_id: str):
             """Cancel or remove a job."""
-            if not queue.cancel_job(job_id):
+            job = queue.get_job(job_id)
+            if not job:
                 raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+            if job.status in ("completed", "failed"):
+                raise HTTPException(status_code=409, detail=f"Job '{job_id}' is already {job.status} and cannot be cancelled")
+            queue.cancel_job(job_id)
             return {"status": "cancelled", "job_id": job_id}
 
         return router
@@ -298,7 +302,10 @@ class JobQueue:
             self._log.info(f'[{self.service_name}] Worker picked up job {job_id} ({job.job_type})')
 
             if self._persistence:
-                await self._persistence.on_running(job)
+                try:
+                    await self._persistence.on_running(job)
+                except Exception as exc:
+                    self._log.error(f"[{self.service_name}] Persistence on_running failed for job {job_id}: {exc}", exc_info=True)
 
             task = asyncio.create_task(self._run_job_fn(job))
             self._running_tasks[job_id] = task
@@ -320,7 +327,10 @@ class JobQueue:
                 if self._current_job_id == job_id:
                     self._current_job_id = None
                 if self._persistence:
-                    await self._persistence.on_done(job)
+                    try:
+                        await self._persistence.on_done(job)
+                    except Exception as exc:
+                        self._log.error(f"[{self.service_name}] Persistence on_done failed for job {job_id}: {exc}", exc_info=True)
                 self._queue.task_done()
                 self._trim_completed_jobs()
                 if callback_url := job.request.get("callback_url"):
@@ -342,7 +352,12 @@ class JobQueue:
         """On startup: mark any jobs that were running when we died as failed."""
         if not self._persistence:
             return
-        stale = await self._persistence.load_stale()
+        try:
+            stale = await self._persistence.load_stale()
+        except Exception as exc:
+            self._log.error(f"[{self.service_name}] Persistence load_stale failed: {exc}", exc_info=True)
+            return
+
         for job in stale:
             job.status = "failed"
             job.error = "Service restarted — job did not complete"
@@ -350,7 +365,10 @@ class JobQueue:
             self._store[job.job_id] = job
             if job.job_id not in self._order:
                 self._order.append(job.job_id)
-            await self._persistence.on_done(job)
+            try:
+                await self._persistence.on_done(job)
+            except Exception as exc:
+                self._log.error(f"[{self.service_name}] Persistence on_done failed for stale job {job.job_id}: {exc}", exc_info=True)
         if stale:
             self._log.info(f"[{self.service_name}] Recovered {len(stale)} stale job(s) as failed")
 

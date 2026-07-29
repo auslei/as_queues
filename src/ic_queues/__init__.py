@@ -1,3 +1,4 @@
-from ._queue import JobQueue, JobRecord, JobEnqueueResponse, JobPersistence
+from ._queue import JobQueue, JobRecord, JobPersistence
 
-__all__ = ["JobQueue", "JobRecord", "JobEnqueueResponse", "JobPersistence"]
+__all__ = ["JobQueue", "JobRecord", "JobPersistence"]
+
