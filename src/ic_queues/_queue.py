@@ -77,6 +77,14 @@ class JobRecord(BaseModel):
 
 
 
+class JobEnqueueResponse(BaseModel):
+    """Returned immediately when a job is accepted into the queue."""
+    job_id: str
+    status: str
+    queue_size: int
+    position: int
+
+
 class JobQueue:
     """
     Serialized FIFO job queue for a single FastAPI service.
