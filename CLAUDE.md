@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`ic_queues` is a shared library (not a service) providing a serialized async job queue for `ic-*` FastAPI microservices. It's consumed as a dependency by other `ic_*` repos (see `/Users/auslei/dev/innovationchild/CLAUDE.md` for the repo map) that need to run background jobs one-at-a-time without a separate task broker (no Celery/Redis).
+`as_queues` is a shared library (not a service) providing a serialized async job queue for `ic-*` FastAPI microservices. It's consumed as a dependency by other `ic_*` repos (see `/Users/auslei/dev/innovationchild/CLAUDE.md` for the repo map) that need to run background jobs one-at-a-time without a separate task broker (no Celery/Redis).
 
-All code lives in a single module: [src/ic_queues/_queue.py](src/ic_queues/_queue.py), re-exported via [src/ic_queues/__init__.py](src/ic_queues/__init__.py).
+All code lives in a single module: [src/as_queues/_queue.py](src/as_queues/_queue.py), re-exported via [src/as_queues/__init__.py](src/as_queues/__init__.py).
 
 ## Commands
 
@@ -16,7 +16,7 @@ uv run pytest        # run all tests
 uv run pytest tests/test_queue.py::test_dedup   # run a single test
 ```
 
-Build backend is hatchling; package sources under `src/ic_queues`.
+Build backend is hatchling; package sources under `src/as_queues`.
 
 ## Architecture
 
