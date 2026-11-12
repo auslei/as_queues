@@ -2,7 +2,7 @@
 Shared serialized job queue for ic-* FastAPI microservices.
 
 Usage pattern:
-    from ic_queues import JobQueue, JobRecord
+    from as_queues import JobQueue, JobRecord
 
     job_queue = JobQueue("my_service")
 

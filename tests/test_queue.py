@@ -1,9 +1,9 @@
-"""Basic smoketests for ic_queues — exercises the public API without a live FastAPI app."""
+"""Basic smoketests for as_queues — exercises the public API without a live FastAPI app."""
 
 import asyncio
 import pytest
 from fastapi import HTTPException
-from ic_queues import JobQueue, JobRecord, JobPersistence
+from as_queues import JobQueue, JobRecord, JobPersistence
 
 
 @pytest.mark.asyncio
