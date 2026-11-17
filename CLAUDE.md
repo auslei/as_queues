@@ -1,35 +1,37 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+`as_queues` — a shared library (not a service): a serialized async job queue consumed as a dependency by `as_*` FastAPI microservices that run background jobs one-at-a-time without a broker (no Celery/Redis).
 
-## What this is
-
-`as_queues` is a shared library (not a service) providing a serialized async job queue for `ic-*` FastAPI microservices. It's consumed as a dependency by other `ic_*` repos (see `/Users/auslei/dev/anthonysun.ai/CLAUDE.md` for the repo map) that need to run background jobs one-at-a-time without a separate task broker (no Celery/Redis).
-
-All code lives in a single module: [src/as_queues/_queue.py](src/as_queues/_queue.py), re-exported via [src/as_queues/__init__.py](src/as_queues/__init__.py).
+Usage examples live in `README.md`; this file is the working map. All code is one module: [src/as_queues/_queue.py](src/as_queues/_queue.py), re-exported via [src/as_queues/__init__.py](src/as_queues/__init__.py).
 
 ## Commands
 
 ```bash
-uv sync              # install deps (incl. dev group)
-uv run pytest        # run all tests
-uv run pytest tests/test_queue.py::test_dedup   # run a single test
+uv sync                                        # install deps (incl. dev group)
+uv run pytest                                  # run all tests
+uv run pytest tests/test_queue.py::test_dedup  # run a single test
 ```
 
 Build backend is hatchling; package sources under `src/as_queues`.
 
 ## Architecture
 
-`JobQueue` (in `_queue.py`) is the whole surface area:
+`JobQueue` (in `_queue.py`) is the whole surface area. Public exports: `JobQueue`, `JobRecord`, `JobPersistence`, `JobEnqueueResponse`.
 
-- **Enqueue → worker → completion** pipeline built on `asyncio.Queue`. `_worker()` pulls job IDs off the queue and spawns a `_process_job` task per job; concurrency is capped by `self._semaphore` (`max_concurrency`, default 1 — jobs run serially unless raised).
-- **Dedup**: `enqueue()` computes a canonical key (`job_type` + JSON-sorted `request_data`) via `_dedup_key`. If a queued/running job already matches, the existing `JobRecord` is returned instead of creating a duplicate — callers should not assume `enqueue()` always creates a new job.
-- **State**: jobs live in `self._store` (dict) + `self._order` (list, for ordering/position lookups). There's no external storage by default — everything is in-process memory, so job history is lost on restart unless persistence is wired up.
-- **Persistence hook (optional)**: `JobPersistence` is a `runtime_checkable` `Protocol` with `on_running`, `on_done`, `load_stale`. Pass an implementation to `JobQueue(persistence=...)` to survive restarts — `on_running`/`on_done` fire inside the worker (no sync/event-loop constraints), and `load_stale()` is called once at `start()` to mark previously-running jobs as failed (crash recovery). Exceptions from persistence hooks are caught and logged, never allowed to crash job processing.
-- **Callbacks**: if a job's `request` dict contains `callback_url`, `_fire_callback` POSTs the final job status/result there after completion (fire-and-forget `asyncio.create_task`, errors only logged).
-- **Trimming**: `_trim_completed_jobs()` keeps at most `MAX_COMPLETED_JOBS` (100) completed/failed records, evicting oldest first — queued/running jobs are never evicted.
-- **FastAPI integration**: `make_router()` returns an `APIRouter` exposing `GET /jobs`, `GET /jobs/{job_id}`, `DELETE /jobs/{job_id}` (cancel — 404 if missing, 409 if already completed/failed). Host services call `job_queue.start(run_job_fn)` on lifespan startup and `job_queue.stop()` on shutdown; `run_job_fn` is the single callback dispatching on `job.job_type`.
+- **Enqueue → worker → completion** pipeline on `asyncio.Queue`. `_worker()` pulls job IDs and spawns a `_process_job` task per job; concurrency capped by `self._semaphore` (`max_concurrency`, default 1 — jobs run serially unless raised).
+- **Dedup**: `enqueue()` computes a canonical key (`job_type` + JSON-sorted `request_data`) via `_dedup_key`. If a queued/running job matches, the existing `JobRecord` is returned — callers must not assume `enqueue()` always creates a new job.
+- **State**: jobs live in `self._store` (dict) + `self._order` (list, for ordering/position). No external storage by default — in-process memory, so history is lost on restart unless persistence is wired up.
+- **Persistence hook (optional)**: `JobPersistence` is a `runtime_checkable` `Protocol` with `on_running`, `on_done`, `load_stale`. Pass to `JobQueue(persistence=...)`. `on_running`/`on_done` fire inside the worker; `load_stale()` runs once at `start()` to mark previously-running jobs failed (crash recovery). Exceptions from persistence hooks are caught and logged, never allowed to crash processing.
+- **Callbacks**: if a job's `request` dict has `callback_url`, `_fire_callback` POSTs the final status/result after completion (fire-and-forget `asyncio.create_task`, errors only logged).
+- **Trimming**: `_trim_completed_jobs()` keeps at most `MAX_COMPLETED_JOBS` (100) completed/failed records, oldest evicted first — queued/running are never evicted.
+- **FastAPI integration**: `make_router()` returns an `APIRouter` exposing `GET /jobs`, `GET /jobs/{job_id}`, `DELETE /jobs/{job_id}` (cancel — 404 if missing, 409 if already done). Host services call `start(run_job_fn)` on lifespan startup, `stop()` on shutdown; `run_job_fn` is the single callback dispatching on `job.job_type`.
+
+## Conventions (this repo's stack rules)
+
+- `uv` for all deps — never pip/poetry.
+- Logging uses stdlib `logging` (`_logger = logging.getLogger(__name__)`) — this library stays dependency-light and does NOT use `as_common`'s `get_logger()`.
+- Type hints on every signature; Pydantic models for `JobRecord`/responses.
 
 ## Testing conventions
 
-Tests in [tests/test_queue.py](tests/test_queue.py) are async smoketests using `pytest-asyncio`, driving `JobQueue` directly (no live FastAPI app/TestClient). The common pattern for asserting on worker-processed state is a short poll loop (`for _ in range(50): await asyncio.sleep(0.02); if <condition>: break`) rather than fixed sleeps.
+Tests in [tests/test_queue.py](tests/test_queue.py) are async smoketests using `pytest-asyncio`, driving `JobQueue` directly (no live FastAPI app/TestClient). To assert on worker-processed state, use a short poll loop (`for _ in range(50): await asyncio.sleep(0.02); if <condition>: break`) rather than fixed sleeps.

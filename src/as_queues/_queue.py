@@ -1,5 +1,5 @@
 """
-Shared serialized job queue for ic-* FastAPI microservices.
+Shared serialized job queue for as-* FastAPI microservices.
 
 Usage pattern:
     from as_queues import JobQueue, JobRecord
